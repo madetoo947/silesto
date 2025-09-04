@@ -762,6 +762,33 @@ add_action( 'edit_user_profile_update', 'silesto_save_user_balance_field' );
 // --- КОНЕЦ БЛОКА УПРАВЛЕНИЯ БАЛАНСОМ ПОЛЬЗОВАТЕЛЯ ---
 
 /**
+ * Получает текущий баланс пользователя.
+ *
+ * @param int $user_id ID пользователя.
+ * @return float Баланс, по умолчанию 0.
+ */
+function silesto_get_user_balance( $user_id ) {
+    $balance = get_user_meta( $user_id, 'silesto_user_balance', true );
+    return ! empty( $balance ) ? (float) $balance : 0;
+}
+
+/**
+ * Обновляет баланс пользователя, добавляя к нему сумму.
+ *
+ * @param int $user_id ID пользователя.
+ * @param float $amount Сумма для пополнения.
+ * @return bool True в случае успеха, false в случае ошибки.
+ */
+function silesto_add_to_user_balance( $user_id, $amount ) {
+    if ( ! $user_id || ! is_numeric( $amount ) || $amount <= 0 ) {
+        return false;
+    }
+    $current_balance = silesto_get_user_balance( $user_id );
+    $new_balance = $current_balance + (float) $amount;
+    return update_user_meta( $user_id, 'silesto_user_balance', $new_balance );
+}
+
+/**
  * Получает и форматирует баланс текущего пользователя.
  * (Исправленная версия: корректно обрабатывает нулевой/неустановленный баланс)
  *
@@ -872,184 +899,176 @@ add_action('wp_ajax_purchase_with_balance', 'silesto_purchase_video_with_balance
 
 // --- КОНЕЦ БЛОКА ---
 
-
-// --- НАЧАЛО БЛОКА: ИНТЕГРАЦИЯ С LAVA TOP ---
-
-// 1. Шорткод для отображения формы пополнения баланса
-add_shortcode('silesto_top_up_form', function() {
-    // Показываем форму только для VIP-пользователей
-    if (!is_user_logged_in() || !current_user_can('vip_user')) {
-        return '<p>This page is available for VIP users only.</p>';
+/**
+ * Шорткод для отображения формы пополнения баланса с фиксированными суммами.
+ * [silesto_recharge_form]
+ * -- ВЕРСИЯ 3.0 (Lava API v2 с Offer ID) --
+ */
+function silesto_recharge_balance_form_shortcode() {
+    // Проверяем, что пользователь авторизован и имеет роль 'vip_user'.
+    if ( ! is_user_logged_in() || ! current_user_can('vip_user') ) {
+        return '';
     }
 
-    // Обработка отправки формы
-    if (isset($_POST['silesto_top_up_amount']) && isset($_POST['_wpnonce']) && wp_verify_nonce($_POST['_wpnonce'], 'silesto_top_up_nonce')) {
-        $amount = floatval($_POST['silesto_top_up_amount']);
-        if ($amount > 0) {
-            // Генерируем ссылку на оплату и перенаправляем пользователя
-            $payment_url = silesto_lava_create_invoice($amount);
-            if ($payment_url) {
-                wp_redirect($payment_url);
-                exit;
-            } else {
-                return '<p style="color: red;">Error creating payment link. Please try again.</p>';
-            }
-        }
-    }
-
-    // HTML-код самой формы
-    ob_start();
-    ?>
-<form method="POST" class="silesto-top-up-form">
-    <h3>Top Up Balance</h3>
-    <p>Enter the amount you wish to add to your balance.</p>
-    <div class="form-field">
-        <label for="silesto_top_up_amount">Amount ($)</label>
-        <input type="number" name="silesto_top_up_amount" min="1" step="0.01" required>
-    </div>
-    <?php wp_nonce_field('silesto_top_up_nonce'); ?>
-    <button type="submit" class="button red-color">Proceed to Payment</button>
-</form>
-<style>
-.silesto-top-up-form {
-    max-width: 400px;
-}
-
-.silesto-top-up-form .form-field {
-    margin-bottom: 15px;
-}
-
-.silesto-top-up-form input {
-    width: 100%;
-    padding: 8px;
-}
-
-.silesto-top-up-form button {
-    width: 100%;
-}
-</style>
-<?php
-    return ob_get_clean();
-});
-
-// 2. Функция для создания счета в LAVA
-function silesto_lava_create_invoice($amount) {
-    $user_id = get_current_user_id();
-    if (!$user_id) return false;
-
-    // --- ВАШИ ДАННЫЕ ИЗ LAVA ---
-    $secret_key = 'PY55A3LL3CUarFnGFWbmLXdDYvZvmhBcTrbsdd9jzgHfdwO967M0YF39Rexh3JWZ';     // Замените на ваш API-ключ LAVA
-    // ---
-
-    $order_id = 'silesto-' . $user_id . '-' . time(); // Уникальный ID заказа
-
-    $request_data = [
-        'sum'       => $amount,
-        'orderId'   => $order_id,
-        'hookUrl'   => home_url('/wp-json/lava/v1/webhook'),
-        'customFields' => (string) $user_id, // <--- КРИТИЧЕСКИ ВАЖНО: передаем ID пользователя
-        'comment'   => 'Balance top-up for user ' . $user_id,
+    /**
+     * ===================================================================
+     * КОНФИГУРАЦИЯ ОФФЕРОВ (Offer ID из вашего кабинета Lava.top)
+     * ===================================================================
+     * Здесь мы связываем сумму пополнения с ее уникальным Offer ID.
+     * !!! ЗАМЕНИТЕ 'YOUR_OFFER_ID_...' НА РЕАЛЬНЫЕ ID !!!
+     */
+    $offers = [
+        '5'   => 'adcdc166-9417-4d6d-b4f0-08753c928ee7'
+        '25'  => '7b76eb00-cd71-4079-8d6d-8fc8edf6d5e7',
+        '50'  => '00e98c7b-befe-40a7-94e4-df3b524ab3e6', 
+        '100' => 'bdfe56df-6d66-4bb7-a208-3e995c08c3db',
+        '150' => 'd634a948-e097-4545-8a44-ac5444604aef',
+        '200' => 'd657b93f-f652-4848-95c1-079cc5e0332c',
+        '250' => 'c507cd31-10e6-454e-8fab-9ffd8342c5fd',
+        '500' => '663acf8a-ccc3-474d-a8b8-10ffb597047b',
     ];
-
-    $response = wp_remote_post('https://api.lava.top/business/invoice/create', [
-        'headers' => [
-            'Authorization' => $secret_key,
-            'Accept'        => 'application/json',
-            'Content-Type'  => 'application/json',
-        ],
-        'body'    => json_encode($request_data),
-        'method'  => 'POST',
-    ]);
-
-    if (is_wp_error($response)) {
-        return false;
-    }
-
-    $body = json_decode(wp_remote_retrieve_body($response), true);
-
-    if (isset($body['data']['url'])) {
-        return $body['data']['url'];
-    }
-    return false;
-}
-
-// 3. Создаем обработчик для вебхуков от LAVA (REST API Endpoint)
-add_action('rest_api_init', function () {
-    register_rest_route('lava/v1', '/webhook', [
-        'methods'  => 'POST',
-        'callback' => 'silesto_lava_webhook_handler',
-        'permission_callback' => '__return_true', // Открываем доступ для LAVA
-    ]);
-});
-
-// 4. Функция, которая обрабатывает вебхук
-function silesto_lava_webhook_handler($request) {
-    $headers = $request->get_headers();
-    $body = $request->get_body();
     
-    // --- ВАШИ ДАННЫЕ ИЗ LAVA ---
-    $secret_key_webhook = 'aPfSJas287R7OLuoqfbxIKM2XCTlYUts01yNDOVEqij3YMypU0sjA8bYUUDBhsPO'; // Замените на ваш Секретный ключ (второй)
-    // ---
+    $nonce = wp_create_nonce( 'silesto_recharge_nonce' );
 
-    // Проверяем подлинность запроса
-    $auth_header = isset($headers['authorization'][0]) ? $headers['authorization'][0] : '';
-    $signature = hash_hmac('sha256', $body, $secret_key_webhook);
-
-    if ($auth_header !== $signature) {
-        // Подпись неверна, игнорируем запрос
-        return new WP_REST_Response('Signature failed', 401);
-    }
-    
-    $data = json_decode($body, true);
-
-    // Проверяем, что это успешный платеж
-    if (isset($data['status']) && $data['status'] === 'success' && !empty($data['custom_fields'])) {
-        $user_id = intval($data['custom_fields']); // <--- Получаем ID нашего пользователя
-        $amount_credited = floatval($data['amount']); // Сумма, которая была зачислена
-
-        if ($user_id > 0 && $amount_credited > 0) {
-            // Получаем текущий баланс
-            $current_balance = get_user_meta($user_id, 'silesto_user_balance', true);
-            $current_balance = !empty($current_balance) ? floatval($current_balance) : 0;
-            
-            // Добавляем новую сумму
-            $new_balance = $current_balance + $amount_credited;
-            
-            // Обновляем баланс пользователя
-            update_user_meta($user_id, 'silesto_user_balance', $new_balance);
-        }
+    $buttons_html = '';
+    foreach ($offers as $amount => $offer_id) {
+        $buttons_html .= "<button type=\"button\" class=\"button recharge-amount-btn\" data-amount=\"{$amount}\" data-offer-id=\"{$offer_id}\">Пополнить на {$amount} $</button>";
     }
 
-    return new WP_REST_Response('OK', 200);
+    $form_html = '
+    <div id="silesto-recharge-wrapper">
+        <h3>Пополнить баланс</h3>
+        <p>Выберите одну из доступных сумм для пополнения:</p>
+        <div class="recharge-buttons-container">
+            ' . $buttons_html . '
+        </div>
+        <input type="hidden" id="silesto_recharge_nonce" value="' . $nonce . '">
+        <div id="silesto-recharge-message" style="display:none; margin-top: 15px;"></div>
+    </div>
+    ';
+
+    return $form_html;
 }
+add_shortcode( 'silesto_recharge_form', 'silesto_recharge_balance_form_shortcode' );
 
-// --- КОНЕЦ БЛОКА: ИНТЕГРАЦИЯ С LAVA TOP ---
-
-
-// --- НАЧАЛО ВРЕМЕННОГО БЛОКА ДЛЯ ТЕСТА LAVA API ---
 
 /**
- * Временный AJAX-обработчик для тестирования создания счета в LAVA.
+ * Подключаем наш JavaScript-файл и передаем в него нужные данные.
  */
-function silesto_test_lava_invoice_ajax_handler() {
-    // Проверяем, что это администратор и проверяем nonce
-    if ( !current_user_can('manage_options') || !check_ajax_referer('silesto_test_nonce', 'nonce', false) ) {
-        wp_send_json_error('Security check failed.');
-        return;
+function silesto_enqueue_recharge_script() {
+    wp_register_script( 'silesto-recharge-js', get_stylesheet_directory_uri() . '/assets/js/recharge.js', array( 'jquery' ), '1.2', true );
+    wp_localize_script( 'silesto-recharge-js', 'silesto_ajax', array( 'ajax_url' => admin_url( 'admin-ajax.php' ) ));
+    wp_enqueue_script( 'silesto-recharge-js' );
+}
+add_action( 'wp_enqueue_scripts', 'silesto_enqueue_recharge_script' );
+
+
+/**
+ * Обработчик AJAX-запроса для инициации платежа.
+ * -- ВЕРСИЯ 3.0 (Lava API v2 с Offer ID) --
+ */
+function silesto_ajax_initiate_payment() {
+    check_ajax_referer( 'silesto_recharge_nonce', 'nonce' );
+
+    if ( ! is_user_logged_in() || ! current_user_can('vip_user') ) {
+        wp_send_json_error( array( 'message' => 'Ошибка: Доступ запрещен.' ) );
     }
 
-    // Тестовая сумма
-    $test_amount = 1.23;
+    $user = wp_get_current_user();
+    $offer_id = isset( $_POST['offerId'] ) ? sanitize_text_field( $_POST['offerId'] ) : '';
+    $amount = isset( $_POST['amount'] ) ? floatval( $_POST['amount'] ) : 0;
 
-    // Вызываем нашу основную функцию для создания счета
-    $payment_url = silesto_lava_create_invoice($test_amount);
+    if ( empty($offer_id) || $amount <= 0 ) {
+        wp_send_json_error( array( 'message' => 'Некорректные данные.' ) );
+    }
 
-    if ($payment_url) {
-        wp_send_json_success(['payment_url' => $payment_url]);
+    $wix_api_url = 'https://www.tottem.shop/_functions/createPayment';
+    
+    // Создаем наш внутренний ID заказа, который ВЕРНЕТСЯ в вебхуке
+    // Формат: silesto_IDпользователя_СУММА_таймстемп
+    $order_id = 'silesto_' . $user->ID . '_' . $amount . '_' . time();
+
+    $request_body = array(
+        'email'     => $user->user_email,
+        'offerId'   => $offer_id,
+        'orderId'   => $order_id, // Этот ID нужен для вебхука
+    );
+
+    $response = wp_remote_post( $wix_api_url, array(
+        'method'      => 'POST',
+        'timeout'     => 45,
+        'headers'     => array( 'Content-Type' => 'application/json; charset=utf-8' ),
+        'body'        => json_encode( $request_body ),
+    ));
+
+    if ( is_wp_error( $response ) ) {
+        wp_send_json_error( array( 'message' => 'Не удалось связаться с сервером оплаты.' ) );
     } else {
-        wp_send_json_error(['message' => 'Failed to create invoice. Check your Project ID and API Key in functions.php']);
+        $body = wp_remote_retrieve_body( $response );
+        $data = json_decode( $body, true );
+
+        if ( isset( $data['payment_url'] ) && !empty($data['payment_url']) ) {
+            wp_send_json_success( array( 'payment_url' => $data['payment_url'] ) );
+        } else {
+            $error_message = isset( $data['message'] ) ? $data['message'] : 'Произошла неизвестная ошибка на сервере оплаты.';
+            error_log('Lava/Wix Error Response: ' . print_r($data, true));
+            wp_send_json_error( array( 'message' => $error_message ) );
+        }
     }
 }
-add_action('wp_ajax_test_lava_invoice', 'silesto_test_lava_invoice_ajax_handler');
+add_action( 'wp_ajax_silesto_initiate_payment', 'silesto_ajax_initiate_payment' );
 
-// --- КОНЕЦ ВРЕМЕННОГО БЛОКА ---
+
+/**
+ * Регистрирует кастомный REST API эндпоинт для приема вебхуков от Wix.
+ */
+add_action( 'rest_api_init', function () {
+    register_rest_route( 'silesto/v1', '/payment-callback', array(
+        'methods' => 'POST',
+        'callback' => 'silesto_handle_wix_payment_callback',
+        'permission_callback' => '__return_true'
+    ) );
+} );
+
+/**
+ * Обработчик данных, пришедших от Wix после успешной оплаты.
+ * -- ВЕРСИЯ 3.0 (Lava API v2) --
+ */
+function silesto_handle_wix_payment_callback( WP_REST_Request $request ) {
+    $params = $request->get_json_params();
+
+    if ( ! defined( 'SILESTO_WIX_SECRET_KEY' ) ) {
+        error_log('SILESTO LAVA INTEGRATION: Секретный ключ SILESTO_WIX_SECRET_KEY не определен.');
+        return new WP_REST_Response( array( 'status' => 'error', 'message' => 'Internal server error.' ), 500 );
+    }
+    if ( ! isset( $params['secret_key'] ) || $params['secret_key'] !== SILESTO_WIX_SECRET_KEY ) {
+        error_log('SILESTO LAVA INTEGRATION: Неудачная попытка доступа к callback-URL. Неверный secret_key.');
+        return new WP_REST_Response( array( 'status' => 'error', 'message' => 'Forbidden.' ), 403 );
+    }
+
+    $order_id = isset( $params['order_id'] ) ? sanitize_text_field( $params['order_id'] ) : null;
+    if ( ! $order_id ) {
+        error_log("SILESTO LAVA INTEGRATION: От Wix не пришел order_id.");
+        return new WP_REST_Response( array( 'status' => 'error', 'message' => 'Invalid data.' ), 400 );
+    }
+    
+    // Разбираем order_id формата 'silesto_USERID_AMOUNT_TIMESTAMP'
+    $parts = explode( '_', $order_id );
+    if ( count($parts) !== 4 || $parts[0] !== 'silesto' || !is_numeric($parts[1]) || !is_numeric($parts[2]) ) {
+         error_log("SILESTO LAVA INTEGRATION: Не удалось извлечь данные из order_id: {$order_id}");
+         return new WP_REST_Response( array( 'status' => 'error', 'message' => 'Invalid order_id format.' ), 400 );
+    }
+    
+    $user_id = (int) $parts[1];
+    $amount  = (float) $parts[2];
+
+    $result = silesto_add_to_user_balance( $user_id, $amount );
+
+    if ( $result === false ) {
+        error_log("SILESTO LAVA INTEGRATION: Ошибка функции silesto_add_to_user_balance для user_id={$user_id}, amount={$amount}");
+        return new WP_REST_Response( array( 'status' => 'error', 'message' => 'Failed to update balance.' ), 500 );
+    }
+
+    error_log("SILESTO LAVA INTEGRATION: Успешное пополнение. user_id={$user_id}, amount={$amount}, order_id={$order_id}");
+    return new WP_REST_Response( array( 'status' => 'success' ), 200 );
+}
